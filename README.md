@@ -58,8 +58,6 @@ platform = espressif32
 board = esp32dev
 framework = arduino
 monitor_speed = 115200
-lib_deps = 
-    adafruit/Adafruit Fingerprint Sensor Library
 ```
 
 ### Arduino IDE
