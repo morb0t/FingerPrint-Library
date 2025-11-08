@@ -1,15 +1,19 @@
 # FingerPrint Library
 
-A powerful Arduino library for fingerprint sensors that provides advanced template management, matching capabilities, and SHA-256 hashing support. Built on top of the Adafruit Fingerprint Sensor Library with enhanced features for secure biometric authentication.
+A powerful Arduino library for fingerprint sensors that **avoids storing templates directly in the sensor**. Instead, it extracts raw fingerprint templates and enables you to store them in your own database (EEPROM, SD card, cloud, etc.). This approach provides unlimited user capacity, data portability, and flexible storage options.
+
+Built on top of the Adafruit Fingerprint Sensor Library with enhanced features for database-driven biometric authentication.
 
 ## 🔐 Features
 
 - **Template Extraction**: Download raw fingerprint templates (512 bytes) from the sensor
-- **External Template Matching**: Match fingerprints against templates stored outside the sensor
-- **SHA-256 Hashing**: Generate cryptographic hashes of fingerprint templates
+- **Database-Driven Storage**: Store templates externally instead of in limited sensor memory
+- **External Template Matching**: Match fingerprints against templates stored in your database
+- **Unlimited Users**: Not limited by sensor's internal storage capacity (typically 127-1000 slots)
 - **Enhanced Enrollment**: Two-scan enrollment with automatic template retrieval
 - **Robust Matching**: Multi-attempt verification with quality checks
 - **Template Upload**: Upload stored templates back to sensor memory for matching
+- **Flexible Storage**: Use EEPROM, SD card, database, or cloud storage
 - **Detailed Logging**: Comprehensive serial output for debugging and monitoring
 
 ## 📋 Table of Contents
@@ -40,7 +44,6 @@ A powerful Arduino library for fingerprint sensors that provides advanced templa
 This library requires:
 
 - [Adafruit Fingerprint Sensor Library](https://github.com/adafruit/Adafruit-Fingerprint-Sensor-Library)
-- **mbedTLS** (for SHA-256 hashing) - included with ESP32 Arduino core
 
 ## 📥 Installation
 
@@ -170,13 +173,13 @@ Verifies sensor connection and retrieves sensor parameters.
 
 #### `uint8_t enrollAndGetTemplate(uint8_t templateOutput[TEMPLATE_SIZE])`
 
-Enrolls a new fingerprint with two-scan verification and retrieves the template.
+Enrolls a new fingerprint with two-scan verification and retrieves the template for external storage.
 
 **Parameters:**
 - `templateOutput`: Buffer to store the 512-byte template
 
 **Returns:**
-- `0`: Success - template stored in buffer
+- `0`: Success - template stored in buffer (ready to save to your database)
 - `1`: Timeout waiting for finger
 - `2`: Image conversion failed
 - `3`: Fingerprints didn't match or model creation failed
@@ -187,16 +190,18 @@ Enrolls a new fingerprint with two-scan verification and retrieves the template.
 2. Waits for finger removal
 3. Prompts for second scan
 4. Creates template model
-5. Downloads template to buffer
+5. Downloads template to buffer (for you to save externally)
+
+**Important:** After successful enrollment, save the `templateOutput` to your chosen storage (EEPROM, SD card, database, etc.). The template is NOT stored in the sensor.
 
 ---
 
 #### `uint8_t matchWithTemplate(const uint8_t* storedTemplate, uint16_t* score)`
 
-Matches a live fingerprint against a stored template.
+Matches a live fingerprint against a template retrieved from your database.
 
 **Parameters:**
-- `storedTemplate`: Previously enrolled 512-byte template
+- `storedTemplate`: Previously enrolled 512-byte template (from your database)
 - `score`: Pointer to store match confidence (0-255)
 
 **Returns:**
@@ -216,36 +221,7 @@ Matches a live fingerprint against a stored template.
 - Image quality validation
 - Detailed error reporting
 
----
-
-### Template Hashing
-
-#### `uint8_t readAndHashFingerprint(uint8_t hashOutput[HASH_SIZE])`
-
-Captures a fingerprint and generates its SHA-256 hash.
-
-**Parameters:**
-- `hashOutput`: Buffer to store 32-byte SHA-256 hash
-
-**Returns:**
-- `0`: Success
-- Non-zero: Error (same codes as template reading)
-
-**Use Case:** Store only hashes instead of full templates for privacy
-
----
-
-#### `bool compareHashes(const uint8_t hash1[HASH_SIZE], const uint8_t hash2[HASH_SIZE])`
-
-Compares two SHA-256 hashes.
-
-**Parameters:**
-- `hash1`: First 32-byte hash
-- `hash2`: Second 32-byte hash
-
-**Returns:**
-- `true`: Hashes match
-- `false`: Hashes differ
+**Important:** This method temporarily uploads your stored template to the sensor for comparison, then the comparison happens. The template is not permanently stored in the sensor.
 
 ---
 
@@ -314,27 +290,48 @@ void loop() {
 }
 ```
 
-### Example 2: Hash-Based Matching
+### Example 2: Storing Templates in EEPROM
 
 ```cpp
-uint8_t hash1[FingerPrint::HASH_SIZE];
-uint8_t hash2[FingerPrint::HASH_SIZE];
+#include <EEPROM.h>
 
-// Enroll
-Serial.println("Enroll your finger...");
-if (fpSensor.readAndHashFingerprint(hash1) == 0) {
-  Serial.println("Hash stored!");
+#define EEPROM_SIZE 512
+#define TEMPLATE_ADDR 0
+
+void setup() {
+  Serial.begin(115200);
+  EEPROM.begin(EEPROM_SIZE);
+  
+  // Initialize sensor...
+  fpSensor.begin(57600);
+  fpSensor.setSerial(&mySerial);
+  fpSensor.init();
 }
 
-delay(5000);
+void enrollAndSave() {
+  uint8_t newTemplate[FingerPrint::TEMPLATE_SIZE];
+  
+  if (fpSensor.enrollAndGetTemplate(newTemplate) == 0) {
+    // Save to EEPROM
+    for (int i = 0; i < FingerPrint::TEMPLATE_SIZE; i++) {
+      EEPROM.write(TEMPLATE_ADDR + i, newTemplate[i]);
+    }
+    EEPROM.commit();
+    Serial.println("Template saved to EEPROM!");
+  }
+}
 
-// Verify
-Serial.println("Verify your finger...");
-if (fpSensor.readAndHashFingerprint(hash2) == 0) {
-  if (fpSensor.compareHashes(hash1, hash2)) {
-    Serial.println("✓ MATCH!");
-  } else {
-    Serial.println("✗ NO MATCH");
+void verifyFromEEPROM() {
+  uint8_t storedTemplate[FingerPrint::TEMPLATE_SIZE];
+  
+  // Load from EEPROM
+  for (int i = 0; i < FingerPrint::TEMPLATE_SIZE; i++) {
+    storedTemplate[i] = EEPROM.read(TEMPLATE_ADDR + i);
+  }
+  
+  uint16_t score = 0;
+  if (fpSensor.matchWithTemplate(storedTemplate, &score) == 0) {
+    Serial.printf("✓ Verified! Score: %d\n", score);
   }
 }
 ```
@@ -384,6 +381,24 @@ bool verifyUser(int* userId) {
 
 ## 🔍 How It Works
 
+### The Problem with Traditional Fingerprint Libraries
+
+Most fingerprint sensor libraries store templates **directly in the sensor's internal memory**, which has major limitations:
+
+- **Limited Capacity**: Sensors typically store only 127-1000 fingerprints
+- **Permanent Storage**: Templates persist in sensor even when powered off
+- **No Flexibility**: Can't easily backup, transfer, or manage templates
+- **Fixed Location**: Templates tied to specific sensor hardware
+
+### This Library's Solution: Database-Driven Approach
+
+Instead of using the sensor as a database, this library:
+
+1. **Extracts Templates**: Downloads the raw 512-byte template from the sensor
+2. **Your Storage**: You store templates wherever you want (EEPROM, SD card, MySQL, Firebase, etc.)
+3. **Temporary Matching**: Uploads templates to sensor only during verification, then discards
+4. **Unlimited Users**: Limited only by your storage capacity, not sensor memory
+
 ### Template Structure
 
 The library extracts **512-byte raw templates** from the sensor, which contain:
@@ -393,17 +408,27 @@ The library extracts **512-byte raw templates** from the sensor, which contain:
 
 ### Matching Process
 
-1. **Capture**: Live fingerprint → CharBuffer1
-2. **Upload**: Stored template → CharBuffer2  
-3. **Compare**: Sensor matches buffers using proprietary algorithm
-4. **Result**: Confidence score (0-255)
+1. **Enrollment**:
+   - User scans finger twice
+   - Sensor creates template model
+   - Library downloads template (512 bytes)
+   - **You save it to your database**
 
-### Why External Templates?
+2. **Verification**:
+   - **You load template from your database**
+   - Library uploads it to sensor's CharBuffer2
+   - User scans finger → CharBuffer1
+   - Sensor compares buffers using proprietary algorithm
+   - Returns confidence score (0-255)
 
-- **Scalability**: Store unlimited users in external database
-- **Flexibility**: Use your own storage (SD card, cloud, EEPROM)
-- **Portability**: Transfer templates between sensors
-- **Security**: Keep templates separate from sensor
+### Why This Approach?
+
+✅ **Unlimited Users**: Store 10, 100, 10,000+ fingerprints  
+✅ **Data Control**: Own your biometric data  
+✅ **Backup & Restore**: Easy template management  
+✅ **Multi-Sensor**: Share templates across multiple sensors  
+✅ **Integration**: Connect to existing databases  
+✅ **Privacy**: Store templates securely off-device  
 
 ## ❌ Error Codes
 
@@ -457,8 +482,7 @@ See [LICENSE](LICENSE) file for details.
 ## 🙏 Acknowledgments
 
 - Built on [Adafruit Fingerprint Sensor Library](https://github.com/adafruit/Adafruit-Fingerprint-Sensor-Library)
-- Uses mbedTLS for cryptographic functions
-- Inspired by the need for flexible fingerprint authentication systems
+- Inspired by the need for scalable, database-driven fingerprint authentication systems
 
 ## 📧 Contact & Support
 
